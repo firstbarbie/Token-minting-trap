@@ -1,0 +1,25 @@
+[network]
+eth_chain_id = 560048
+ethereum_rpc = "https://rpc.ankr.com/eth_hoodi/6852445d1ba0cde4f6506223f888d4a756889df7254b65674820c4324ab7eeba"
+drosera_rpc = "https://relay.hoodi.drosera.io"
+drosera_address = "0x91cB447BaFc6e0EA0F4Fe056F5a9b1F14bb06e5D"
+
+[traps.token_minting_trap]
+path = "out/TokenMintingTrap.sol/TokenMintingTrap.json"
+name = "TokenMintingTrap"
+response_contract = "0x51C6CBb8097F0F061478475F83Ba5b0401B793C0" 
+response_function = "name()"
+min_number_of_operators = 1
+max_number_of_operators = 10
+block_sample_size = 10
+address = "0x921a558615e579D398F687ce3DB9c9fFb9DD10B4"
+private_trap = true
+whitelist = ["0x9bc5C03517e0b84d1bc378f8f83e270f5273f23a"]
+
+
+
+
+
+
+
+

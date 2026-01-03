@@ -1,0 +1,13 @@
+version: '3'
+services:
+  drosera:
+    image: ghcr.io/drosera-network/drosera-operator:latest
+    container_name: drosera-node
+    network_mode: host
+    volumes:
+      - drosera_data:/data
+    command: node --data-dir /data --network-p2p-port 31313 --server-port 31314 --eth-rpc-url https://rpc.ankr.com/eth_hoodi/6852445d1ba0cde4f6506223f888d4a756889df7254b65674820c4324ab7eeba --eth-backup-rpc-url https://hoodi.drpc.org --drosera-address 0x91cB447BaFc6e0EA0F4Fe056F5a9b1F14bb06e5D --eth-private-key ${ETH_PRIVATE_KEY} --listen-address 0.0.0.0 --network-external-p2p-address ${VPS_IP} --disable-dnr-confirmation true
+    restart: always
+
+volumes:
+  drosera_data:
