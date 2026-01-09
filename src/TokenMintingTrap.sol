@@ -12,98 +12,95 @@ contract TokenMintingTrap is Trap {
     address public constant TARGET_TOKEN = 0x42f5236Efd494B97f9e64eE82062462754bFf9b4;
     uint256 public constant BLOCK_MINT_LIMIT = 1000 * 10**18;
     address public immutable targetToken = TARGET_TOKEN;
-    uint256 public lastTotalSupply;
     uint256 public blockMintLimit = BLOCK_MINT_LIMIT;
     
-    address[] public approvedMinters;
-    
+    address[] public approvedRecipients;
+
+    event TrapResponse(bytes incidentDetails);
+
     bytes32 constant TRANSFER_EVENT_TOPIC0 = 0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef;
 
-    constructor() {
-        lastTotalSupply = IERC20(TARGET_TOKEN).totalSupply();
+    function getApprovedRecipients() external view returns (address[] memory) {
+        return approvedRecipients;
+    }
+
+    function addApprovedRecipient(address recipient) external {
+        approvedRecipients.push(recipient);
     }
 
 
-    function addApprovedMinter(address minter) external {
-        approvedMinters.push(minter);
-    }
-
-    struct TrapConfig {
-        uint256 lastTotalSupply;
-        uint256 blockMintLimit;
-        address[] approvedMinters;
-    }
 
     function collect() external view override returns (bytes memory) {
-        TrapConfig memory config = TrapConfig({
-            lastTotalSupply: lastTotalSupply,
-            blockMintLimit: blockMintLimit,
-            approvedMinters: approvedMinters
-        });
-        
         return abi.encode(
             IERC20(targetToken).totalSupply(),
             getEventLogs(),
-            config
+            approvedRecipients,
+            blockMintLimit
         );
+    }
+
+    function _parseCollectData(bytes calldata data) internal pure returns (uint256, EventLog[] memory, address[] memory, uint256) {
+        return abi.decode(data, (uint256, EventLog[], address[], uint256));
     }
 
     function shouldRespond(
         bytes[] calldata data
     ) external pure override returns (bool, bytes memory) {
-        if (data.length == 0) return (false, abi.encode("No data"));
+        if (data.length < 2) return (false, abi.encode("Not enough data to compare blocks"));
 
-        (uint256 currentSupply, EventLog[] memory logs, TrapConfig memory config) = 
-            abi.decode(data[0], (uint256, EventLog[], TrapConfig));
+        (uint256 currentSupply, EventLog[] memory logs, address[] memory _approvedRecipients, uint256 _blockMintLimit) = 
+            _parseCollectData(data[0]);
         
-        if (currentSupply <= config.lastTotalSupply) {
-            return (false, abi.encode("Supply stable"));
-        }
+        (uint256 previousSupply, , , ) = _parseCollectData(data[1]);
 
-        uint256 delta = currentSupply - config.lastTotalSupply;
-        
-        // 1. Rate Limit Enforcement
-        if (delta > config.blockMintLimit) {
-            return (true, abi.encode("Rate limit exceeded", delta));
-        }
-
-        // 2. Mint Source Verification & Silent Mint Detection
-        uint256 accountedMintAmount = 0;
+        uint256 mintedFromLogs = 0;
+        uint256 burnedFromLogs = 0;
 
         for (uint256 i = 0; i < logs.length; i++) {
             if (logs[i].topics[0] == TRANSFER_EVENT_TOPIC0) {
                 address from = address(uint160(uint256(logs[i].topics[1])));
-                if (from == address(0)) {
-                    address to = address(uint160(uint256(logs[i].topics[2])));
-                    uint256 amount = abi.decode(logs[i].data, (uint256));
-                    
+                address to = address(uint160(uint256(logs[i].topics[2])));
+                uint256 amount = abi.decode(logs[i].data, (uint256));
+
+                if (from == address(0)) { // Mint
+                    mintedFromLogs += amount;
+
                     bool isApproved = false;
-                    for (uint256 j = 0; j < config.approvedMinters.length; j++) {
-                        if (config.approvedMinters[j] == to) {
+                    for (uint256 j = 0; j < _approvedRecipients.length; j++) {
+                        if (_approvedRecipients[j] == to) {
                             isApproved = true;
                             break;
                         }
                     }
-
                     if (!isApproved) {
                         return (true, abi.encode("Unauthorized mint to", to, amount));
                     }
-                    
-                    accountedMintAmount += amount;
+                } else if (to == address(0)) { // Burn
+                    burnedFromLogs += amount;
                 }
             }
         }
 
-        // 3. Silent Mint Check
-        if (delta > accountedMintAmount) {
-            return (true, abi.encode("Silent mint detected", delta - accountedMintAmount));
+        // 1. Rate Limit Enforcement
+        if (mintedFromLogs > _blockMintLimit) {
+            return (true, abi.encode("Rate limit exceeded", mintedFromLogs));
         }
 
-        return (false, abi.encode("Valid mint"));
+        // 2. Silent Mint/Burn/Supply Change Check
+        // Using int256 to handle potential burns making supply decrease
+        int256 actualDelta = int256(currentSupply) - int256(previousSupply);
+        int256 expectedDelta = int256(mintedFromLogs) - int256(burnedFromLogs);
+
+        if (actualDelta != expectedDelta) {
+            return (true, abi.encode("Silent supply change detected", actualDelta - expectedDelta));
+        }
+
+        return (false, abi.encode("No anomalies detected"));
     }
 
-    function syncSupply() external {
-        lastTotalSupply = IERC20(targetToken).totalSupply();
+    // New response function to be called by the Drosera node
+    function respond(bytes memory incidentDetails) public {
+        emit TrapResponse(incidentDetails);
     }
 
     function eventLogFilters() public view override returns (EventFilter[] memory) {

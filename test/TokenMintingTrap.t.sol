@@ -9,97 +9,216 @@ import {EventLog} from "contracts/libraries/Events.sol";
 contract TokenMintingTrapTest is Test {
     TokenMintingTrap public trap;
     SimpleMockToken public token;
-    
-    address public approvedMinter = address(0x123);
+
+    address public approvedRecipient = address(0x123);
+    address public anotherApprovedRecipient = address(0x456);
     address public maliciousActor = address(0x666);
-    uint256 public limit = 1000e18;
+
 
     function setUp() public {
+        trap = new TokenMintingTrap();
         token = new SimpleMockToken("TrapToken", "TT");
         // Etch the mock token at the hardcoded TARGET_TOKEN address for tests
-        vm.etch(0x42f5236Efd494B97f9e64eE82062462754bFf9b4, address(token).code);
-        token = SimpleMockToken(0x42f5236Efd494B97f9e64eE82062462754bFf9b4);
-        
-        trap = new TokenMintingTrap();
-        trap.addApprovedMinter(approvedMinter);
+        vm.etch(trap.targetToken(), address(token).code);
+        token = SimpleMockToken(trap.targetToken());
+
+        trap.addApprovedRecipient(approvedRecipient);
+        trap.addApprovedRecipient(anotherApprovedRecipient);
     }
 
+    function _prepareData(
+        uint256 prevSupply,
+        uint256 currentSupply,
+        EventLog[] memory logs
+    ) internal view returns (bytes[] memory) {
+        bytes[] memory data = new bytes[](2);
 
-    function _prepareData(uint256 supply, EventLog[] memory logs) internal view returns (bytes[] memory) {
-        address[] memory minters = new address[](1);
-        minters[0] = approvedMinter;
-        
-        TokenMintingTrap.TrapConfig memory config = TokenMintingTrap.TrapConfig({
-            lastTotalSupply: trap.lastTotalSupply(),
-            blockMintLimit: trap.blockMintLimit(),
-            approvedMinters: minters
-        });
-        
-        bytes[] memory data = new bytes[](1);
-        data[0] = abi.encode(supply, logs, config);
+        // Current block data
+        data[0] = abi.encode(
+            currentSupply,
+            logs,
+            trap.getApprovedRecipients(),
+            trap.blockMintLimit()
+        );
+
+        // Previous block data (logs don't matter here for the current tests)
+        EventLog[] memory emptyLogs;
+        data[1] = abi.encode(
+            prevSupply,
+            emptyLogs,
+            trap.getApprovedRecipients(),
+            trap.blockMintLimit()
+        );
+
         return data;
     }
 
-    function test_ValidMint() public {
-        token.mint(approvedMinter, 500e18);
-        
-        EventLog[] memory logs = new EventLog[](1);
+    function _createMintLog(address to, uint256 amount) internal view returns (EventLog memory) {
         bytes32[] memory topics = new bytes32[](3);
-        topics[0] = 0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef;
+        topics[0] = keccak256("Transfer(address,address,uint256)");
         topics[1] = bytes32(uint256(0));
-        topics[2] = bytes32(uint256(uint160(approvedMinter)));
-        logs[0] = EventLog({
+        topics[2] = bytes32(uint256(uint160(to)));
+        return EventLog({
             emitter: address(token),
             topics: topics,
-            data: abi.encode(500e18)
+            data: abi.encode(amount)
         });
-        
-        bytes[] memory data = _prepareData(token.totalSupply(), logs);
-        
-        (bool shouldRespond, bytes memory response) = trap.shouldRespond(data);
-        assertFalse(shouldRespond, "Should not respond to valid mint");
-        console2.log("Response:", string(response));
     }
 
-    function test_UnauthorizedMinter() public {
-        token.mint(maliciousActor, 500e18);
-        
+    function test_NoMints() public {
+        uint256 initialSupply = token.totalSupply();
+        uint256 newSupply = token.totalSupply();
+
+        EventLog[] memory logs = new EventLog[](0);
+
+        bytes[] memory data = _prepareData(initialSupply, newSupply, logs);
+
+        (bool shouldRespond, bytes memory response) = trap.shouldRespond(data);
+        assertFalse(shouldRespond, "Should not respond when no mints occur");
+        console2.logBytes(response);
+    }
+
+    function test_NotEnoughData() public {
+        uint256 initialSupply = token.totalSupply();
+        uint256 mintAmount = 500e18;
+        token.mint(approvedRecipient, mintAmount);
+        uint256 newSupply = token.totalSupply();
+
         EventLog[] memory logs = new EventLog[](1);
-        bytes32[] memory topics = new bytes32[](3);
-        topics[0] = 0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef;
-        topics[1] = bytes32(uint256(0));
-        topics[2] = bytes32(uint256(uint160(maliciousActor)));
-        logs[0] = EventLog({
-            emitter: address(token),
-            topics: topics,
-            data: abi.encode(500e18)
-        });
+        logs[0] = _createMintLog(approvedRecipient, mintAmount);
+
+        bytes[] memory data = new bytes[](1);
+        data[0] = abi.encode(
+            newSupply,
+            logs,
+            trap.getApprovedRecipients(),
+            trap.blockMintLimit()
+        );
+
+        (bool shouldRespond, bytes memory response) = trap.shouldRespond(data);
+        assertFalse(shouldRespond, "Should not respond with insufficient data");
+        (string memory reason) = abi.decode(response, (string));
+        assertEq(reason, "Not enough data to compare blocks");
+    }
+
+    function test_ValidMint() public {
+        uint256 initialSupply = token.totalSupply();
+        uint256 mintAmount = 500e18;
+        token.mint(approvedRecipient, mintAmount);
+        uint256 newSupply = token.totalSupply();
+
+        EventLog[] memory logs = new EventLog[](1);
+        logs[0] = _createMintLog(approvedRecipient, mintAmount);
+
+        bytes[] memory data = _prepareData(initialSupply, newSupply, logs);
+
+        (bool shouldRespond, bytes memory response) = trap.shouldRespond(data);
+        assertFalse(shouldRespond, "Should not respond to valid mint");
+        console2.logBytes(response);
+    }
+    
+    function test_UnauthorizedRecipient() public {
+        uint256 initialSupply = token.totalSupply();
+        uint256 mintAmount = 500e18;
+        token.mint(maliciousActor, mintAmount);
+        uint256 newSupply = token.totalSupply();
+
+        EventLog[] memory logs = new EventLog[](1);
+        logs[0] = _createMintLog(maliciousActor, mintAmount);
         
-        bytes[] memory data = _prepareData(token.totalSupply(), logs);
+        bytes[] memory data = _prepareData(initialSupply, newSupply, logs);
         
         (bool shouldRespond, bytes memory response) = trap.shouldRespond(data);
         assertTrue(shouldRespond, "Should respond to unauthorized mint");
-        console2.log("Unauthorized Response:", string(response));
+        
+        (string memory reason, address to, uint256 amount) = abi.decode(response, (string, address, uint256));
+        assertEq(reason, "Unauthorized mint to");
+        assertEq(to, maliciousActor);
+        assertEq(amount, mintAmount);
     }
 
     function test_RateLimitExceeded() public {
-        token.mint(approvedMinter, 1500e18);
+        uint256 initialSupply = token.totalSupply();
+        uint256 mintAmount1 = 600e18;
+        uint256 mintAmount2 = 500e18;
+        token.mint(approvedRecipient, mintAmount1);
+        token.mint(anotherApprovedRecipient, mintAmount2);
+        uint256 newSupply = token.totalSupply();
+
+        EventLog[] memory logs = new EventLog[](2);
+        logs[0] = _createMintLog(approvedRecipient, mintAmount1);
+        logs[1] = _createMintLog(anotherApprovedRecipient, mintAmount2);
         
-        EventLog[] memory logs = new EventLog[](0); // Doesn't matter for rate limit
-        bytes[] memory data = _prepareData(token.totalSupply(), logs);
+        bytes[] memory data = _prepareData(initialSupply, newSupply, logs);
         
-        (bool shouldRespond, ) = trap.shouldRespond(data);
+        (bool shouldRespond, bytes memory response) = trap.shouldRespond(data);
         assertTrue(shouldRespond, "Should respond to rate limit breach");
+
+        (string memory reason, uint256 totalMint) = abi.decode(response, (string, uint256));
+        assertEq(reason, "Rate limit exceeded");
+        assertEq(totalMint, mintAmount1 + mintAmount2);
     }
 
-    function test_SilentMint() public {
-        token.silentMint(approvedMinter, 500e18);
+    function test_SilentSupplyChange() public {
+        uint256 initialSupply = token.totalSupply();
+        uint256 mintAmount = 100e18;
+        token.mint(approvedRecipient, mintAmount);
+
+        // Simulate a silent mint by manually increasing supply in the test
+        uint256 silentAmount = 500e18;
+        token.silentMint(address(0), silentAmount); // silent mint to nobody, just to bump supply
+        uint256 newSupply = token.totalSupply();
         
-        EventLog[] memory logs = new EventLog[](0);
-        bytes[] memory data = _prepareData(token.totalSupply(), logs);
+        EventLog[] memory logs = new EventLog[](1);
+        logs[0] = _createMintLog(approvedRecipient, mintAmount);
+        
+        bytes[] memory data = _prepareData(initialSupply, newSupply, logs);
         
         (bool shouldRespond, bytes memory response) = trap.shouldRespond(data);
         assertTrue(shouldRespond, "Should respond to silent mint");
-        console2.log("Silent Mint Response:", string(response));
+        
+        (string memory reason, int256 silentDelta) = abi.decode(response, (string, int256));
+        assertEq(reason, "Silent supply change detected");
+        assertEq(silentDelta, int256(silentAmount));
+    }
+
+    function test_BurnEventsAreHandled() public {
+        uint256 initialSupply = 1000e18;
+        token.mint(address(this), initialSupply); // Start with some supply
+        
+        uint256 mintAmount = 200e18;
+        uint256 burnAmount = 150e18;
+
+        token.mint(approvedRecipient, mintAmount);
+        token.burn(address(this), burnAmount);
+        
+        uint256 newSupply = token.totalSupply();
+
+        EventLog[] memory logs = new EventLog[](2);
+        logs[0] = _createMintLog(approvedRecipient, mintAmount);
+        
+        // Create Burn Log
+        bytes32[] memory burnTopics = new bytes32[](3);
+        burnTopics[0] = keccak256("Transfer(address,address,uint256)");
+        burnTopics[1] = bytes32(uint256(uint160(address(this))));
+        burnTopics[2] = bytes32(uint256(0));
+        logs[1] = EventLog({
+            emitter: address(token),
+            topics: burnTopics,
+            data: abi.encode(burnAmount)
+        });
+        
+        bytes[] memory data = _prepareData(initialSupply, newSupply, logs);
+        
+        (bool shouldRespond, bytes memory response) = trap.shouldRespond(data);
+        assertFalse(shouldRespond, "Should not respond when mints and burns are balanced and valid");
+        console2.logBytes(response);
+    }
+
+    function test_RespondFunctionEmitsEvent() public {
+        bytes memory incident = abi.encode("Test incident");
+        vm.expectEmit(true, true, true, true);
+        emit TokenMintingTrap.TrapResponse(incident);
+        trap.respond(incident);
     }
 }
