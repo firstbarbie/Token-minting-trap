@@ -11,8 +11,11 @@ interface IERC20 {
 contract TokenMintingTrap is Trap {
     address public constant TARGET_TOKEN = 0x42f5236Efd494B97f9e64eE82062462754bFf9b4;
     uint256 public constant BLOCK_MINT_LIMIT = 1000 * 10**18;
+    uint256 public constant MAX_APPROVED_RECIPIENTS = 50;
+
     address public immutable targetToken = TARGET_TOKEN;
     uint256 public blockMintLimit = BLOCK_MINT_LIMIT;
+    address public owner;
     
     address[] public approvedRecipients;
 
@@ -20,12 +23,34 @@ contract TokenMintingTrap is Trap {
 
     bytes32 constant TRANSFER_EVENT_TOPIC0 = 0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef;
 
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner can call this function.");
+        _;
+    }
+
+    constructor() {
+        owner = msg.sender;
+    }
+
     function getApprovedRecipients() external view returns (address[] memory) {
         return approvedRecipients;
     }
 
-    function addApprovedRecipient(address recipient) external {
+    function addApprovedRecipient(address recipient) external onlyOwner {
+        require(approvedRecipients.length < MAX_APPROVED_RECIPIENTS, "Approved recipients list is full");
         approvedRecipients.push(recipient);
+    }
+
+    function removeApprovedRecipient(address recipient) external onlyOwner {
+        for (uint i = 0; i < approvedRecipients.length; i++) {
+            if (approvedRecipients[i] == recipient) {
+                if (i != approvedRecipients.length - 1) {
+                    approvedRecipients[i] = approvedRecipients[approvedRecipients.length - 1];
+                }
+                approvedRecipients.pop();
+                return;
+            }
+        }
     }
 
 
@@ -46,7 +71,9 @@ contract TokenMintingTrap is Trap {
     function shouldRespond(
         bytes[] calldata data
     ) external pure override returns (bool, bytes memory) {
-        if (data.length < 2) return (false, abi.encode("Not enough data to compare blocks"));
+        if (data.length < 2 || data[0].length == 0 || data[1].length == 0) {
+            return (false, bytes(""));
+        }
 
         (uint256 currentSupply, EventLog[] memory logs, address[] memory _approvedRecipients, uint256 _blockMintLimit) = 
             _parseCollectData(data[0]);

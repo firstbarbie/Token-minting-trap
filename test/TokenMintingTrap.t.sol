@@ -79,26 +79,12 @@ contract TokenMintingTrapTest is Test {
     }
 
     function test_NotEnoughData() public {
-        uint256 initialSupply = token.totalSupply();
-        uint256 mintAmount = 500e18;
-        token.mint(approvedRecipient, mintAmount);
-        uint256 newSupply = token.totalSupply();
-
-        EventLog[] memory logs = new EventLog[](1);
-        logs[0] = _createMintLog(approvedRecipient, mintAmount);
-
         bytes[] memory data = new bytes[](1);
-        data[0] = abi.encode(
-            newSupply,
-            logs,
-            trap.getApprovedRecipients(),
-            trap.blockMintLimit()
-        );
+        data[0] = bytes("some data");
 
         (bool shouldRespond, bytes memory response) = trap.shouldRespond(data);
         assertFalse(shouldRespond, "Should not respond with insufficient data");
-        (string memory reason) = abi.decode(response, (string));
-        assertEq(reason, "Not enough data to compare blocks");
+        assertEq(response.length, 0, "Response should be empty for insufficient data");
     }
 
     function test_ValidMint() public {
@@ -220,5 +206,50 @@ contract TokenMintingTrapTest is Test {
         vm.expectEmit(true, true, true, true);
         emit TokenMintingTrap.TrapResponse(incident);
         trap.respond(incident);
+    }
+
+    function test_Revert_AddApprovedRecipientByNonOwner() public {
+        vm.prank(maliciousActor);
+        vm.expectRevert("Only owner can call this function.");
+        trap.addApprovedRecipient(address(0xDEAD));
+    }
+
+    function test_Revert_RemoveApprovedRecipientByNonOwner() public {
+        vm.prank(maliciousActor);
+        vm.expectRevert("Only owner can call this function.");
+        trap.removeApprovedRecipient(approvedRecipient);
+    }
+
+    function test_OwnerCanRemoveRecipient() public {
+        trap.addApprovedRecipient(address(0xBEEF));
+        assertTrue(isInArray(trap.getApprovedRecipients(), address(0xBEEF)));
+
+        trap.removeApprovedRecipient(address(0xBEEF));
+
+        assertFalse(isInArray(trap.getApprovedRecipients(), address(0xBEEF)));
+    }
+
+    function test_Revert_AddRecipientWhenListIsFull() public {
+        uint256 limit = trap.MAX_APPROVED_RECIPIENTS();
+
+        // Fill up the list to the limit. Starting at 1 because setUp adds two.
+        for (uint256 i = 2; i < limit; i++) {
+            trap.addApprovedRecipient(address(uint160(i)));
+        }
+
+        assertEq(trap.getApprovedRecipients().length, limit);
+
+        // Try to add one more
+        vm.expectRevert("Approved recipients list is full");
+        trap.addApprovedRecipient(address(0xDEAD));
+    }
+
+    function isInArray(address[] memory arr, address value) internal pure returns (bool) {
+        for (uint i = 0; i < arr.length; i++) {
+            if (arr[i] == value) {
+                return true;
+            }
+        }
+        return false;
     }
 }
